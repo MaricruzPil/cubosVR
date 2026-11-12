@@ -1,21 +1,20 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 
 <head>
-	<title>three.js vr - handinput - point and drag</title>
+	<title>Laboratorio de física VR</title>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-	<meta property="og:title" content="three.js vr - handinput - point and drag">
+	<meta property="og:title" content="Laboratorio de física VR">
 	<meta property="og:type" content="website">
-	<meta property="og:url" content="https://threejs.org/examples/webxr_vr_handinput_pointerdrag.html">
-	<meta property="og:image" content="https://threejs.org/examples/screenshots/webxr_vr_handinput_pointerdrag.jpg">
 	<link type="text/css" rel="stylesheet" href="examples/main.css">
 </head>
 
 <body>
 
 	<div id="info">
-		<a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> vr - handinput - point and drag<br />
+		<strong>Laboratorio de física VR</strong><br>
+		Pellizca una figura para agarrarla y suéltala para lanzarla.
 	</div>
 
 	<script type="importmap">
@@ -36,183 +35,390 @@
 		import { OculusHandPointerModel } from 'three/addons/webxr/OculusHandPointerModel.js';
 		import { createText } from 'three/addons/webxr/Text2D.js';
 
+		const GRAVITY = - 9.81;
+		const FLOOR_SIZE = 4;
+		const ROOM_LIMIT = FLOOR_SIZE / 2 - 0.1;
+		const SOLVER_ITERATIONS = 5;
+		const MAX_DELTA = 1 / 30;
+
 		let camera, scene, renderer;
-		let menuMesh, instructionText;
+		let menuMesh, instructionText, statusText, exitText;
 		let controllers, handPointers;
 		let needsCalibration = true;
+		let previousTime = 0;
 
-		// meshes the hand rays can intersect
+		// Mallas que pueden recibir un rayo de las manos.
 		const intersectables = [];
 
-		// button states: [none, hovered, pressed]
+		// Estados de botones: [none, hovered, pressed].
 		const buttons = [];
 
-		// draggable states: [detached, hovered, to-be-attached, attached, to-be-detached]
+		// Los objetos se mantienen en la escena: agarrarlos ya no rompe el sistema físico.
 		const draggables = [];
+		const physicsBodies = [];
 
-		init();
+		const pointerPosition = new THREE.Vector3();
+		const pointerVelocity = new THREE.Vector3();
+		const collisionDelta = new THREE.Vector3();
+		const collisionNormal = new THREE.Vector3();
+		const tangent = new THREE.Vector3();
+		const angularAxis = new THREE.Vector3();
+		const deltaQuaternion = new THREE.Quaternion();
 
-		function makeButtonMesh(x, y, z, color) {
+		const shapeDefinitions = [
+			{
+				name: 'Cubo',
+				createGeometry: () => new THREE.BoxGeometry( 0.16, 0.16, 0.16 ),
+				mass: 1.2,
+				color: 0xff4d7d,
+				emissive: 0x39051a,
+				emissiveIntensity: 0.24,
+				metalness: 0.34,
+				roughness: 0.24,
+				clearcoat: 0.7,
+				clearcoatRoughness: 0.16,
+				flatShading: true,
+			},
+			{
+				name: 'Prisma triangular',
+				createGeometry: () => new THREE.CylinderGeometry( 0.12, 0.12, 0.2, 3 ),
+				mass: 1,
+				color: 0xffa63d,
+				emissive: 0x3a1202,
+				emissiveIntensity: 0.22,
+				metalness: 0.28,
+				roughness: 0.2,
+				clearcoat: 0.45,
+				clearcoatRoughness: 0.2,
+				flatShading: true,
+			},
+			{
+				name: 'Esfera',
+				createGeometry: () => new THREE.SphereGeometry( 0.105, 24, 16 ),
+				mass: 0.8,
+				color: 0x2dd4bf,
+				emissive: 0x032f2d,
+				emissiveIntensity: 0.38,
+				metalness: 0.08,
+				roughness: 0.13,
+				clearcoat: 1,
+				clearcoatRoughness: 0.09,
+				flatShading: false,
+			},
+			{
+				name: 'Cilindro',
+				createGeometry: () => new THREE.CylinderGeometry( 0.105, 0.105, 0.2, 20 ),
+				mass: 1,
+				color: 0x5f8dff,
+				emissive: 0x06164d,
+				emissiveIntensity: 0.3,
+				metalness: 0.62,
+				roughness: 0.19,
+				clearcoat: 0.65,
+				clearcoatRoughness: 0.12,
+				flatShading: false,
+			},
+			{
+				name: 'Toroide',
+				createGeometry: () => new THREE.TorusGeometry( 0.09, 0.035, 12, 24 ),
+				mass: 0.9,
+				color: 0xd87aff,
+				emissive: 0x27033c,
+				emissiveIntensity: 0.36,
+				metalness: 0.45,
+				roughness: 0.16,
+				clearcoat: 0.8,
+				clearcoatRoughness: 0.1,
+				flatShading: false,
+			},
+		];
 
-			const geometry = new THREE.BoxGeometry(x, y, z);
-			const material = new THREE.MeshPhongMaterial({ color: color });
-			const buttonMesh = new THREE.Mesh(geometry, material);
-			return buttonMesh;
+		function makeButtonMesh( width, height, depth, color ) {
+
+			const geometry = new THREE.BoxGeometry( width, height, depth );
+			const material = new THREE.MeshPhysicalMaterial( {
+				color,
+				emissive: color,
+				emissiveIntensity: 0.08,
+				roughness: 0.3,
+				metalness: 0.3,
+				clearcoat: 0.35,
+			} );
+			return new THREE.Mesh( geometry, material );
+
+		}
+
+		function makePhysicsBody( mesh, shape ) {
+
+			mesh.geometry.computeBoundingSphere();
+			const scale = mesh.scale.x;
+			const radius = mesh.geometry.boundingSphere.radius * scale;
+			const body = {
+				mesh,
+				shapeName: shape.name,
+				state: 'detached',
+				originalParent: scene,
+				attachedPointer: null,
+				grabOffset: new THREE.Vector3(),
+				lastPosition: new THREE.Vector3(),
+				velocity: new THREE.Vector3(),
+				angularVelocity: new THREE.Vector3(),
+				mass: shape.mass,
+				inverseMass: 1 / shape.mass,
+				radius,
+				restitution: 0.38,
+				friction: 0.76,
+				baseScale: scale,
+				baseEmissiveIntensity: mesh.material.emissiveIntensity,
+			};
+
+			mesh.userData.physicsBody = body;
+			physicsBodies.push( body );
+			draggables.push( body );
+			intersectables.push( mesh );
+			return body;
 
 		}
 
 		function init() {
 
-			const container = document.createElement('div');
-			document.body.appendChild(container);
+			const container = document.createElement( 'div' );
+			document.body.appendChild( container );
 
 			scene = new THREE.Scene();
-			scene.background = new THREE.Color(0x444444);
+			scene.background = new THREE.Color( 0x08111d );
+			scene.fog = new THREE.Fog( 0x08111d, 3.4, 6.2 );
 
-			camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 10);
-			camera.position.set(0, 1.2, 0.3);
+			camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.1, 10 );
+			camera.position.set( 0, 1.2, 0.3 );
 
-			scene.add(new THREE.HemisphereLight(0xcccccc, 0x999999, 3));
+			scene.add( new THREE.HemisphereLight( 0xa7c7e7, 0x182235, 2.2 ) );
 
-			const light = new THREE.DirectionalLight(0xffffff, 3);
-			light.position.set(0, 6, 0);
+			const light = new THREE.DirectionalLight( 0xffffff, 3.4 );
+			light.position.set( - 2, 5, 1 );
 			light.castShadow = true;
 			light.shadow.camera.top = 2;
 			light.shadow.camera.bottom = - 2;
 			light.shadow.camera.right = 2;
 			light.shadow.camera.left = - 2;
-			light.shadow.mapSize.set(4096, 4096);
-			scene.add(light);
+			light.shadow.mapSize.set( 2048, 2048 );
+			scene.add( light );
 
-			renderer = new THREE.WebGLRenderer({ antialias: true });
-			renderer.setPixelRatio(window.devicePixelRatio);
-			renderer.setSize(window.innerWidth, window.innerHeight);
-			renderer.setAnimationLoop(animate);
+			const cyanLight = new THREE.PointLight( 0x27e6e0, 2.2, 4.2, 2 );
+			cyanLight.position.set( - 1.5, 1.6, - 0.8 );
+			scene.add( cyanLight );
+
+			const magentaLight = new THREE.PointLight( 0xf044c8, 1.8, 3.8, 2 );
+			magentaLight.position.set( 1.4, 1.2, - 0.4 );
+			scene.add( magentaLight );
+
+			renderer = new THREE.WebGLRenderer( { antialias: true } );
+			renderer.setPixelRatio( window.devicePixelRatio );
+			renderer.setSize( window.innerWidth, window.innerHeight );
+			renderer.outputColorSpace = THREE.SRGBColorSpace;
+			renderer.toneMapping = THREE.ACESFilmicToneMapping;
+			renderer.toneMappingExposure = 1.12;
+			renderer.setAnimationLoop( animate );
 			renderer.shadowMap.enabled = true;
+			renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 			renderer.xr.enabled = true;
 			renderer.xr.cameraAutoUpdate = false;
+			container.appendChild( renderer.domElement );
 
-			container.appendChild(renderer.domElement);
+			const sessionInit = { requiredFeatures: [ 'hand-tracking' ] };
+			const vrButton = VRButton.createButton( renderer, sessionInit );
+			document.body.appendChild( vrButton );
+			translateVrButton( vrButton );
+			const vrButtonObserver = new MutationObserver( () => translateVrButton( vrButton ) );
+			vrButtonObserver.observe( vrButton, { childList: true, subtree: true, characterData: true } );
 
-			const sessionInit = {
-				requiredFeatures: ['hand-tracking']
-			};
+			setupControllers();
+			setupEnvironment();
+			setupMenu();
+			setupObjects();
 
-			document.body.appendChild(VRButton.createButton(renderer, sessionInit));
+			window.addEventListener( 'resize', onWindowResize );
 
-			// controllers
-			const controller1 = renderer.xr.getController(0);
-			scene.add(controller1);
+		}
 
-			const controller2 = renderer.xr.getController(1);
-			scene.add(controller2);
+		function translateVrButton( vrButton ) {
+
+			const label = vrButton.textContent.trim();
+			if ( label.includes( 'ENTER VR' ) ) vrButton.textContent = 'ENTRAR EN VR';
+			if ( label.includes( 'EXIT VR' ) ) vrButton.textContent = 'SALIR DE VR';
+			if ( label.includes( 'VR NOT SUPPORTED' ) ) vrButton.textContent = 'VR NO COMPATIBLE';
+			if ( label.includes( 'VR NEEDS HTTPS' ) ) vrButton.textContent = 'VR NECESITA HTTPS';
+
+		}
+
+		function setupControllers() {
+
+			const controller1 = renderer.xr.getController( 0 );
+			const controller2 = renderer.xr.getController( 1 );
+			scene.add( controller1, controller2 );
 
 			const controllerModelFactory = new XRControllerModelFactory();
+			const controllerGrip1 = renderer.xr.getControllerGrip( 0 );
+			controllerGrip1.add( controllerModelFactory.createControllerModel( controllerGrip1 ) );
+			scene.add( controllerGrip1 );
 
-			// Hand 1
-			const controllerGrip1 = renderer.xr.getControllerGrip(0);
-			controllerGrip1.add(controllerModelFactory.createControllerModel(controllerGrip1));
-			scene.add(controllerGrip1);
+			const hand1 = renderer.xr.getHand( 0 );
+			hand1.add( new OculusHandModel( hand1 ) );
+			const handPointer1 = new OculusHandPointerModel( hand1, controller1 );
+			hand1.add( handPointer1 );
+			scene.add( hand1 );
 
-			const hand1 = renderer.xr.getHand(0);
-			hand1.add(new OculusHandModel(hand1));
-			const handPointer1 = new OculusHandPointerModel(hand1, controller1);
-			hand1.add(handPointer1);
+			const controllerGrip2 = renderer.xr.getControllerGrip( 1 );
+			controllerGrip2.add( controllerModelFactory.createControllerModel( controllerGrip2 ) );
+			scene.add( controllerGrip2 );
 
-			scene.add(hand1);
+			const hand2 = renderer.xr.getHand( 1 );
+			hand2.add( new OculusHandModel( hand2 ) );
+			const handPointer2 = new OculusHandPointerModel( hand2, controller2 );
+			hand2.add( handPointer2 );
+			scene.add( hand2 );
 
-			// Hand 2
-			const controllerGrip2 = renderer.xr.getControllerGrip(1);
-			controllerGrip2.add(controllerModelFactory.createControllerModel(controllerGrip2));
-			scene.add(controllerGrip2);
+			controllers = [ controllerGrip1, controllerGrip2 ];
+			handPointers = [ handPointer1, handPointer2 ];
 
-			const hand2 = renderer.xr.getHand(1);
-			hand2.add(new OculusHandModel(hand2));
-			const handPointer2 = new OculusHandPointerModel(hand2, controller2);
-			hand2.add(handPointer2);
-			scene.add(hand2);
+		}
 
-			controllers = [controllerGrip1, controllerGrip2];
-			handPointers = [handPointer1, handPointer2];
+		function setupEnvironment() {
 
-			// setup objects in scene
-			const floorGeometry = new THREE.PlaneGeometry(4, 4);
-			const floorMaterial = new THREE.MeshPhongMaterial({ color: 0x222222 });
-			const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+			const floorGeometry = new THREE.PlaneGeometry( FLOOR_SIZE, FLOOR_SIZE );
+			const floorMaterial = new THREE.MeshPhysicalMaterial( {
+				color: 0x10293b,
+				emissive: 0x04101c,
+				emissiveIntensity: 0.42,
+				roughness: 0.58,
+				metalness: 0.3,
+				clearcoat: 0.28,
+				clearcoatRoughness: 0.26,
+			} );
+			const floor = new THREE.Mesh( floorGeometry, floorMaterial );
 			floor.rotation.x = - Math.PI / 2;
 			floor.receiveShadow = true;
-			scene.add(floor);
+			scene.add( floor );
 
-			const menuGeometry = new THREE.PlaneGeometry(0.24, 0.5);
-			const menuMaterial = new THREE.MeshPhongMaterial({
-				opacity: 0,
+			const grid = new THREE.GridHelper( FLOOR_SIZE, 20, 0x3d6580, 0x1c3448 );
+			grid.position.y = 0.002;
+			scene.add( grid );
+
+			const arenaRing = new THREE.Mesh(
+				new THREE.RingGeometry( 0.8, 0.815, 64 ),
+				new THREE.MeshBasicMaterial( {
+					color: 0x38e1df,
+					transparent: true,
+					opacity: 0.4,
+					side: THREE.DoubleSide,
+				} )
+			);
+			arenaRing.rotation.x = - Math.PI / 2;
+			arenaRing.position.y = 0.004;
+			scene.add( arenaRing );
+
+		}
+
+		function setupMenu() {
+
+			const menuGeometry = new THREE.PlaneGeometry( 0.36, 0.62 );
+			const menuMaterial = new THREE.MeshPhysicalMaterial( {
+				color: 0x102033,
+				emissive: 0x07111e,
+				emissiveIntensity: 0.58,
+				roughness: 0.42,
+				metalness: 0.26,
+				clearcoat: 0.5,
+				clearcoatRoughness: 0.2,
 				transparent: true,
-			});
-			menuMesh = new THREE.Mesh(menuGeometry, menuMaterial);
-			menuMesh.position.set(0.4, 1, - 1);
+				opacity: 0.94,
+				side: THREE.DoubleSide,
+			} );
+			menuMesh = new THREE.Mesh( menuGeometry, menuMaterial );
+			menuMesh.position.set( 0.42, 1, - 1 );
 			menuMesh.rotation.y = - Math.PI / 12;
-			scene.add(menuMesh);
+			scene.add( menuMesh );
+			intersectables.push( menuMesh );
 
-			const resetButton = makeButtonMesh(0.2, 0.1, 0.01, 0x355c7d);
-			const resetButtonText = createText('reset', 0.06);
-			resetButton.add(resetButtonText);
-			resetButtonText.position.set(0, 0, 0.0051);
-			resetButton.position.set(0, - 0.06, 0);
-			menuMesh.add(resetButton);
+			const menuTitle = createText( 'Física VR', 0.052 );
+			menuTitle.position.set( 0, 0.22, 0.006 );
+			menuMesh.add( menuTitle );
 
-			const exitButton = makeButtonMesh(0.2, 0.1, 0.01, 0xff0000);
-			const exitButtonText = createText('exit', 0.06);
-			exitButton.add(exitButtonText);
-			exitButtonText.position.set(0, 0, 0.0051);
-			exitButton.position.set(0, - 0.18, 0);
-			menuMesh.add(exitButton);
+			const menuHint = createText( 'Pellizca para agarrar', 0.026 );
+			menuHint.position.set( 0, 0.14, 0.006 );
+			menuMesh.add( menuHint );
 
-			instructionText = createText('This is a WebXR Hands demo, please explore with hands.', 0.04);
-			instructionText.position.set(0, 1.6, - 0.6);
-			scene.add(instructionText);
+			const resetButton = makeButtonMesh( 0.28, 0.1, 0.018, 0x197c8c );
+			const resetButtonText = createText( 'Reiniciar', 0.042 );
+			resetButton.add( resetButtonText );
+			resetButtonText.position.set( 0, 0, 0.0101 );
+			resetButton.position.set( 0, 0.035, 0.0 );
+			menuMesh.add( resetButton );
 
-			const exitText = createText('Exiting session...', 0.04);
-			exitText.position.set(0, 1.5, - 0.6);
+			const exitButton = makeButtonMesh( 0.28, 0.1, 0.018, 0xc94e5b );
+			const exitButtonText = createText( 'Salir de VR', 0.042 );
+			exitButton.add( exitButtonText );
+			exitButtonText.position.set( 0, 0, 0.0101 );
+			exitButton.position.set( 0, - 0.09, 0.0 );
+			menuMesh.add( exitButton );
+
+			buttons.push(
+				{
+					mesh: resetButton,
+					currState: 'none',
+					prevState: 'none',
+					action: randomizeObjects,
+				},
+				{
+					mesh: exitButton,
+					currState: 'none',
+					prevState: 'none',
+					action: exitVr,
+				}
+			);
+			intersectables.push( resetButton, exitButton );
+
+			instructionText = createText( 'Pellizca una figura para agarrarla. Suéltala para lanzarla.', 0.04 );
+			instructionText.position.set( 0, 1.62, - 0.72 );
+			scene.add( instructionText );
+
+			statusText = createText( 'Gravedad activa · 5 formas · colisiones', 0.032 );
+			statusText.position.set( 0, 1.53, - 0.72 );
+			scene.add( statusText );
+
+			exitText = createText( 'Saliendo de la sesión…', 0.04 );
+			exitText.position.set( 0, 1.44, - 0.72 );
 			exitText.visible = false;
-			scene.add(exitText);
+			scene.add( exitText );
 
-			for (let i = 0; i < 20; i++) {
+		}
 
-				const object = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 0.15), new THREE.MeshLambertMaterial({ color: 0xffffff }));
-				scene.add(object);
+		function setupObjects() {
 
-				intersectables.push(object);
-				draggables.push({ mesh: object, state: 'detached', originalParent: scene, attachedPointer: null });
+			for ( let i = 0; i < 20; i ++ ) {
+
+				const shape = shapeDefinitions[ i % shapeDefinitions.length ];
+				const material = new THREE.MeshPhysicalMaterial( {
+					color: shape.color,
+					emissive: shape.emissive,
+					emissiveIntensity: shape.emissiveIntensity,
+					roughness: shape.roughness,
+					metalness: shape.metalness,
+					clearcoat: shape.clearcoat,
+					clearcoatRoughness: shape.clearcoatRoughness,
+					flatShading: shape.flatShading,
+				} );
+				const object = new THREE.Mesh( shape.createGeometry(), material );
+				const scale = 0.86 + Math.random() * 0.25;
+				object.scale.setScalar( scale );
+				object.castShadow = true;
+				object.receiveShadow = true;
+				scene.add( object );
+				makePhysicsBody( object, shape );
 
 			}
 
 			randomizeObjects();
-
-			intersectables.push(menuMesh, resetButton, exitButton);
-
-			buttons.push(
-				{
-					mesh: resetButton, currState: 'none', prevState: 'none', action: function () {
-
-						randomizeObjects();
-
-					}
-				},
-				{
-					mesh: exitButton, currState: 'none', prevState: 'none', action: function () {
-
-						exitText.visible = true;
-						setTimeout(function () {
-
-							exitText.visible = false; renderer.xr.getSession().end();
-
-						}, 2000);
-
-					}
-				}
-			);
-
-			window.addEventListener('resize', onWindowResize);
 
 		}
 
@@ -220,45 +426,72 @@
 
 			camera.aspect = window.innerWidth / window.innerHeight;
 			camera.updateProjectionMatrix();
-
-			renderer.setSize(window.innerWidth, window.innerHeight);
+			renderer.setSize( window.innerWidth, window.innerHeight );
 
 		}
 
 		function randomizeObjects() {
 
-			draggables.forEach(draggable => {
+			releaseAllDrags();
 
-				const object = draggable.mesh;
+			const placedBodies = [];
+			physicsBodies.forEach( ( body, index ) => {
 
-				object.material.color.setHex(Math.random() * 0xffffff);
+				body.mesh.material.color.setHex( shapeDefinitions[ index % shapeDefinitions.length ].color );
+				body.velocity.set( 0, 0, 0 );
+				body.angularVelocity.set(
+					( Math.random() - 0.5 ) * 1.8,
+					( Math.random() - 0.5 ) * 1.8,
+					( Math.random() - 0.5 ) * 1.8
+				);
+				body.mesh.rotation.set(
+					Math.random() * Math.PI * 2,
+					Math.random() * Math.PI * 2,
+					Math.random() * Math.PI * 2
+				);
 
-				object.position.x = Math.random() * 2 - 1;
-				object.position.y = Math.random() * 2;
-				object.position.z = Math.random() * 2 - 1;
+				let placed = false;
+				for ( let attempt = 0; attempt < 500 && ! placed; attempt ++ ) {
 
-				object.rotation.x = Math.random() * 2 * Math.PI;
-				object.rotation.y = Math.random() * 2 * Math.PI;
-				object.rotation.z = Math.random() * 2 * Math.PI;
+					const candidate = new THREE.Vector3(
+						( Math.random() * 2 - 1 ) * 0.78,
+						body.radius + 0.12 + Math.random() * 1.12,
+						( Math.random() * 2 - 1 ) * 0.78
+					);
+					const clear = placedBodies.every( other =>
+						candidate.distanceTo( other.mesh.position ) > body.radius + other.radius + 0.025
+					);
+					if ( clear ) {
 
-				object.scale.x = Math.random() + 0.5;
-				object.scale.y = Math.random() + 0.5;
-				object.scale.z = Math.random() + 0.5;
+						body.mesh.position.copy( candidate );
+						body.lastPosition.copy( candidate );
+						placedBodies.push( body );
+						placed = true;
 
-			});
+					}
+
+				}
+
+				if ( ! placed ) {
+
+					body.mesh.position.set( 0, body.radius + 0.12 + index * 0.02, 0 );
+					body.lastPosition.copy( body.mesh.position );
+
+				}
+
+			} );
 
 		}
 
 		function calibrateMenu() {
 
-			// position the menu relative to the camera once the session has started
-
-			if (needsCalibration && renderer.xr.getSession()) {
+			if ( needsCalibration && renderer.xr.getSession() ) {
 
 				const xrCamera = renderer.xr.getCamera();
-				menuMesh.position.x = xrCamera.position.x + 0.4;
-				menuMesh.position.y = xrCamera.position.y;
-				menuMesh.position.z = xrCamera.position.z - 1;
+				menuMesh.position.set( xrCamera.position.x + 0.42, xrCamera.position.y, xrCamera.position.z - 1 );
+				instructionText.position.set( xrCamera.position.x, xrCamera.position.y + 0.42, xrCamera.position.z - 0.72 );
+				statusText.position.set( xrCamera.position.x, xrCamera.position.y + 0.33, xrCamera.position.z - 0.72 );
+				exitText.position.set( xrCamera.position.x, xrCamera.position.y + 0.24, xrCamera.position.z - 0.72 );
 				needsCalibration = false;
 
 			}
@@ -267,99 +500,101 @@
 
 		function updateInstructionText() {
 
-			// the instruction text is only visible as long as motion controllers are used
-
-			instructionText.visible = controllers.some(controller => controller.visible);
+			instructionText.visible = renderer.xr.isPresenting || controllers.some( controller => controller.visible );
+			statusText.visible = instructionText.visible;
 
 		}
 
-		function updateDraggables() {
+		function getPointerWorldPosition( handPointer, target ) {
 
-			draggables.forEach(draggable => {
+			if ( ! handPointer || ! handPointer.pointerObject ) return false;
+			handPointer.pointerObject.getWorldPosition( target );
+			return true;
 
-				const object = draggable.mesh;
+		}
 
-				switch (draggable.state) {
+		function beginGrab( body, handPointer ) {
 
-					case 'to-be-attached':
-						draggable.attachedPointer.children[0].attach(object);
-						draggable.state = 'attached';
-						break;
-					case 'to-be-detached':
-						draggable.originalParent.attach(object);
-						draggable.state = 'detached';
-						break;
-					default:
-						object.scale.set(1, 1, 1);
+			if ( body.state === 'attached' || ! getPointerWorldPosition( handPointer, pointerPosition ) ) return;
+			body.grabOffset.copy( body.mesh.position ).sub( pointerPosition );
+			body.lastPosition.copy( body.mesh.position );
+			body.attachedPointer = handPointer;
+			body.state = 'attached';
+			handPointer.setAttached( true );
 
-				}
+		}
 
-			});
+		function releaseGrab( body ) {
+
+			if ( body.state !== 'attached' ) return;
+			if ( body.attachedPointer ) body.attachedPointer.setAttached( false );
+			body.attachedPointer = null;
+			body.state = 'detached';
+
+		}
+
+		function releaseAllDrags() {
+
+			draggables.forEach( body => releaseGrab( body ) );
 
 		}
 
 		function updateHandRays() {
 
-			handPointers.forEach(hp => {
+			draggables.forEach( body => {
+
+				body.mesh.scale.setScalar( body.baseScale );
+				body.mesh.material.emissiveIntensity = body.baseEmissiveIntensity;
+
+			} );
+
+			handPointers.forEach( handPointer => {
+
+				if ( ! handPointer.visible && handPointer.isAttached() ) {
+
+					const attachedBody = draggables.find( body => body.attachedPointer === handPointer );
+					if ( attachedBody ) releaseGrab( attachedBody );
+
+				}
+				if ( ! handPointer.isPinched() && handPointer.isAttached() ) {
+
+					const attachedBody = draggables.find( body => body.attachedPointer === handPointer );
+					if ( attachedBody ) releaseGrab( attachedBody );
+
+				}
 
 				let distance = null;
 				let intersectingMesh = null;
-				intersectables.forEach(object => {
+				intersectables.forEach( object => {
 
-					const intersections = hp.intersectObject(object, false);
-					if (intersections && intersections.length > 0) {
+					const intersections = handPointer.intersectObject( object, false );
+					if ( intersections && intersections.length > 0 && ( distance === null || intersections[ 0 ].distance < distance ) ) {
 
-						if (distance == null || intersections[0].distance < distance) {
-
-							distance = intersections[0].distance;
-							intersectingMesh = object;
-
-						}
+						distance = intersections[ 0 ].distance;
+						intersectingMesh = object;
 
 					}
 
-				});
-				if (distance) {
+				} );
 
-					hp.setCursor(distance);
-					const button = buttons.find(button => button.mesh === intersectingMesh);
-					if (button !== undefined) {
+				if ( distance !== null ) {
 
-						if (hp.isPinched()) {
+					handPointer.setCursor( distance );
+					const button = buttons.find( candidate => candidate.mesh === intersectingMesh );
+					if ( button ) button.currState = handPointer.isPinched() ? 'pressed' : 'hovered';
 
-							button.currState = 'pressed';
+					const body = draggables.find( candidate => candidate.mesh === intersectingMesh );
+					if ( body ) {
 
-						} else if (button.currState != 'pressed') {
+						body.mesh.scale.setScalar( body.baseScale * 1.08 );
+						body.mesh.material.emissiveIntensity = body.baseEmissiveIntensity + 0.42;
+						if ( handPointer.isPinched() && ! handPointer.isAttached() && body.state === 'detached' ) {
 
-							button.currState = 'hovered';
+							beginGrab( body, handPointer );
 
-						}
+						} else if ( ! handPointer.isPinched() && handPointer.isAttached() && body.attachedPointer === handPointer ) {
 
-					}
-
-					const draggable = draggables.find(draggable => draggable.mesh === intersectingMesh);
-					if (draggable !== undefined) {
-
-						intersectingMesh.scale.set(1.1, 1.1, 1.1);
-						if (hp.isPinched()) {
-
-							if (!hp.isAttached() && draggable.state != 'attached') {
-
-								draggable.state = 'to-be-attached';
-								draggable.attachedPointer = hp;
-								hp.setAttached(true);
-
-							}
-
-						} else {
-
-							if (hp.isAttached() && draggable.state == 'attached') {
-
-								draggable.state = 'to-be-detached';
-								draggable.attachedPointer = null;
-								hp.setAttached(false);
-
-							}
+							releaseGrab( body );
 
 						}
 
@@ -367,57 +602,196 @@
 
 				} else {
 
-					hp.setCursor(1.5);
+					handPointer.setCursor( 1.5 );
+					if ( handPointer.isAttached() && ! handPointer.isPinched() ) {
+
+						const body = draggables.find( candidate => candidate.attachedPointer === handPointer );
+						if ( body ) releaseGrab( body );
+
+					}
 
 				}
 
-			});
+			} );
 
 		}
 
 		function updateButtons() {
 
-			buttons.forEach(button => {
+			buttons.forEach( button => {
 
-				if (button.currState == 'none') {
-
-					button.mesh.scale.set(1, 1, 1);
-
-				} else {
-
-					button.mesh.scale.set(1.1, 1.1, 1.1);
-
-				}
-
-				if (button.currState == 'pressed' && button.prevState != 'pressed') {
-
-					button.action();
-
-				}
-
-				// preserve prevState, clear currState
-				// updateHandRays() will update currState
-
+				button.mesh.scale.setScalar( button.currState === 'none' ? 1 : 1.08 );
+				if ( button.currState === 'pressed' && button.prevState !== 'pressed' ) button.action();
 				button.prevState = button.currState;
 				button.currState = 'none';
 
-			});
+			} );
 
 		}
 
-		function animate() {
+		function applyFloorAndWalls( body, applyFriction = true ) {
 
-			renderer.xr.updateCamera(camera);
+			const position = body.mesh.position;
+			const radius = body.radius;
+			if ( position.y - radius < 0 ) {
+
+				position.y = radius;
+				if ( body.velocity.y < 0 ) body.velocity.y = Math.abs( body.velocity.y ) < 0.08 ? 0 : - body.velocity.y * body.restitution;
+				if ( applyFriction ) {
+
+					body.velocity.x *= body.friction;
+					body.velocity.z *= body.friction;
+
+				}
+
+			}
+
+			[ 'x', 'z' ].forEach( axis => {
+
+				const limit = ROOM_LIMIT - radius;
+				if ( position[ axis ] < - limit ) {
+
+					position[ axis ] = - limit;
+					if ( body.velocity[ axis ] < 0 ) body.velocity[ axis ] = - body.velocity[ axis ] * body.restitution;
+
+				} else if ( position[ axis ] > limit ) {
+
+					position[ axis ] = limit;
+					if ( body.velocity[ axis ] > 0 ) body.velocity[ axis ] = - body.velocity[ axis ] * body.restitution;
+
+				}
+
+			} );
+
+		}
+
+		function resolveBodyCollision( first, second ) {
+
+			if ( first.state === 'attached' && second.state === 'attached' ) return;
+			collisionDelta.subVectors( second.mesh.position, first.mesh.position );
+			const distanceSquared = collisionDelta.lengthSq();
+			const minimumDistance = first.radius + second.radius;
+			if ( distanceSquared >= minimumDistance * minimumDistance ) return;
+
+			const distance = Math.sqrt( distanceSquared );
+			if ( distance > 0.00001 ) collisionNormal.copy( collisionDelta ).multiplyScalar( 1 / distance );
+			else collisionNormal.set( 1, 0, 0 );
+
+			const firstInverseMass = first.state === 'attached' ? 0 : first.inverseMass;
+			const secondInverseMass = second.state === 'attached' ? 0 : second.inverseMass;
+			const inverseMassSum = firstInverseMass + secondInverseMass;
+			if ( inverseMassSum === 0 ) return;
+
+			const penetration = minimumDistance - distance + 0.0005;
+			first.mesh.position.addScaledVector( collisionNormal, - penetration * firstInverseMass / inverseMassSum );
+			second.mesh.position.addScaledVector( collisionNormal, penetration * secondInverseMass / inverseMassSum );
+
+			const relativeVelocity = collisionDelta.set( 0, 0, 0 ).subVectors( second.velocity, first.velocity );
+			const velocityAlongNormal = relativeVelocity.dot( collisionNormal );
+			if ( velocityAlongNormal < 0 ) {
+
+				const impulse = - ( 1 + Math.min( first.restitution, second.restitution ) ) * velocityAlongNormal / inverseMassSum;
+				first.velocity.addScaledVector( collisionNormal, - impulse * firstInverseMass );
+				second.velocity.addScaledVector( collisionNormal, impulse * secondInverseMass );
+
+				const tangentVelocity = tangent.copy( relativeVelocity ).addScaledVector( collisionNormal, - velocityAlongNormal );
+				if ( tangentVelocity.lengthSq() > 0.000001 ) {
+
+					tangentVelocity.normalize();
+					const frictionImpulse = impulse * Math.sqrt( first.friction * second.friction );
+					first.velocity.addScaledVector( tangentVelocity, frictionImpulse * firstInverseMass );
+					second.velocity.addScaledVector( tangentVelocity, - frictionImpulse * secondInverseMass );
+
+				}
+
+			}
+
+		}
+
+		function updatePhysics( delta ) {
+
+			physicsBodies.forEach( body => {
+
+				if ( body.state === 'attached' ) {
+
+					if ( getPointerWorldPosition( body.attachedPointer, pointerPosition ) ) {
+
+						body.lastPosition.copy( body.mesh.position );
+						const targetPosition = pointerVelocity.copy( pointerPosition ).add( body.grabOffset );
+						body.velocity.subVectors( targetPosition, body.mesh.position ).multiplyScalar( 1 / Math.max( delta, 0.0001 ) );
+						body.mesh.position.copy( targetPosition );
+
+					}
+
+					return;
+
+				}
+
+				body.velocity.y += GRAVITY * delta;
+				body.velocity.multiplyScalar( Math.pow( 0.997, delta * 60 ) );
+				body.mesh.position.addScaledVector( body.velocity, delta );
+
+				const angularSpeed = body.angularVelocity.length();
+				if ( angularSpeed > 0.0001 ) {
+
+					angularAxis.copy( body.angularVelocity ).normalize();
+					deltaQuaternion.setFromAxisAngle( angularAxis, angularSpeed * delta );
+					body.mesh.quaternion.multiply( deltaQuaternion );
+					body.angularVelocity.multiplyScalar( Math.pow( 0.985, delta * 60 ) );
+
+				}
+
+			} );
+
+			for ( let iteration = 0; iteration < SOLVER_ITERATIONS; iteration ++ ) {
+
+				physicsBodies.forEach( body => applyFloorAndWalls( body, iteration === 0 ) );
+				for ( let firstIndex = 0; firstIndex < physicsBodies.length; firstIndex ++ ) {
+
+					for ( let secondIndex = firstIndex + 1; secondIndex < physicsBodies.length; secondIndex ++ ) {
+
+						resolveBodyCollision( physicsBodies[ firstIndex ], physicsBodies[ secondIndex ] );
+
+					}
+
+				}
+
+			}
+
+			physicsBodies.forEach( body => applyFloorAndWalls( body, false ) );
+
+		}
+
+		function exitVr() {
+
+			exitText.visible = true;
+			setTimeout( () => {
+
+				exitText.visible = false;
+				const session = renderer.xr.getSession();
+				if ( session ) session.end();
+
+			}, 900 );
+
+		}
+
+		function animate( time = 0 ) {
+
+			renderer.xr.updateCamera( camera );
+			const delta = previousTime === 0 ? 1 / 60 : Math.min( ( time - previousTime ) / 1000, MAX_DELTA );
+			previousTime = time;
 
 			calibrateMenu();
 			updateInstructionText();
-			updateDraggables();
 			updateHandRays();
+			updatePhysics( delta );
 			updateButtons();
 
-			renderer.render(scene, camera);
+			renderer.render( scene, camera );
 
 		}
+
+		init();
 
 	</script>
 </body>
