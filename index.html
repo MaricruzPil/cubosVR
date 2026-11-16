@@ -5,8 +5,10 @@
 	<title>Laboratorio de física VR</title>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+	<meta name="author" content="Maricruz Pineda Lara">
 	<meta property="og:title" content="Laboratorio de física VR">
 	<meta property="og:type" content="website">
+	<link rel="icon" type="image/svg+xml" href="favicon.svg">
 	<link type="text/css" rel="stylesheet" href="examples/main.css">
 </head>
 
@@ -16,6 +18,22 @@
 		<strong>Laboratorio de física VR</strong><br>
 		Pellizca una figura para agarrarla y suéltala para lanzarla.
 	</div>
+
+	<footer class="site-footer">
+		<span>Desarrollado por Maricruz Pineda Lara</span>
+		<nav class="social-links" aria-label="Perfiles de Maricruz Pineda Lara">
+			<a href="https://www.linkedin.com/in/maricruz-pinedal" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn de Maricruz Pineda Lara">
+				<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+					<path d="M20.45 20.45h-3.55v-5.57c0-1.33-.03-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.36V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.26 2.37 4.26 5.46v6.28ZM5.35 7.43a2.06 2.06 0 1 1 0-4.12 2.06 2.06 0 0 1 0 4.12ZM3.57 20.45h3.56V9H3.57v11.45Z" />
+				</svg>
+			</a>
+			<a href="https://github.com/MaricruzPil" target="_blank" rel="noopener noreferrer" aria-label="GitHub de Maricruz Pineda Lara">
+				<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+					<path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.17c-3.22.7-3.9-1.37-3.9-1.37-.52-1.34-1.28-1.7-1.28-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.57-.29-5.28-1.29-5.28-5.73 0-1.27.45-2.3 1.19-3.11-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.17 1.19A10.97 10.97 0 0 1 12 5.92c.98 0 1.97.13 2.9.38 2.2-1.5 3.17-1.19 3.17-1.19.63 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.11 0 4.45-2.71 5.44-5.29 5.73.42.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" />
+				</svg>
+			</a>
+		</nav>
+	</footer>
 
 	<script type="importmap">
 	{
@@ -37,6 +55,8 @@
 
 		const GRAVITY = - 9.81;
 		const FLOOR_SIZE = 4;
+		const BACKGROUND_SIZE = 40;
+		const BACKGROUND_GRID_DIVISIONS = 200;
 		const ROOM_LIMIT = FLOOR_SIZE / 2 - 0.1;
 		const SOLVER_ITERATIONS = 5;
 		const MAX_DELTA = 1 / 30;
@@ -186,10 +206,10 @@
 			document.body.appendChild( container );
 
 			scene = new THREE.Scene();
-			scene.background = new THREE.Color( 0x08111d );
-			scene.fog = new THREE.Fog( 0x08111d, 3.4, 6.2 );
+			scene.background = new THREE.Color( 0x10293b );
+			scene.fog = new THREE.Fog( 0x10293b, 3.4, 6.2 );
 
-			camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.1, 10 );
+			camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.1, 100 );
 			camera.position.set( 0, 1.2, 0.3 );
 
 			scene.add( new THREE.HemisphereLight( 0xa7c7e7, 0x182235, 2.2 ) );
@@ -285,7 +305,37 @@
 
 		function setupEnvironment() {
 
-			const floorGeometry = new THREE.PlaneGeometry( FLOOR_SIZE, FLOOR_SIZE );
+			const backdrop = new THREE.Mesh(
+				new THREE.BoxGeometry( BACKGROUND_SIZE, BACKGROUND_SIZE, BACKGROUND_SIZE ),
+				new THREE.MeshBasicMaterial( {
+					color: 0x10293b,
+					fog: false,
+					depthWrite: false,
+					side: THREE.BackSide,
+				} )
+			);
+			backdrop.renderOrder = - 1;
+			scene.add( backdrop );
+
+			const halfBackground = BACKGROUND_SIZE / 2;
+			const addBackdropGrid = ( x, y, z, rotationX, rotationY, rotationZ ) => {
+
+				const backdropGrid = new THREE.GridHelper( BACKGROUND_SIZE, BACKGROUND_GRID_DIVISIONS, 0x3d6580, 0x1c3448 );
+				backdropGrid.position.set( x, y, z );
+				backdropGrid.rotation.set( rotationX, rotationY, rotationZ );
+				backdropGrid.material.fog = false;
+				scene.add( backdropGrid );
+
+			};
+
+			addBackdropGrid( 0, halfBackground, 0, 0, 0, 0 );
+			addBackdropGrid( 0, - halfBackground, 0, 0, 0, 0 );
+			addBackdropGrid( halfBackground, 0, 0, 0, 0, Math.PI / 2 );
+			addBackdropGrid( - halfBackground, 0, 0, 0, 0, Math.PI / 2 );
+			addBackdropGrid( 0, 0, halfBackground, Math.PI / 2, 0, 0 );
+			addBackdropGrid( 0, 0, - halfBackground, Math.PI / 2, 0, 0 );
+
+			const floorGeometry = new THREE.PlaneGeometry( BACKGROUND_SIZE, BACKGROUND_SIZE );
 			const floorMaterial = new THREE.MeshPhysicalMaterial( {
 				color: 0x10293b,
 				emissive: 0x04101c,
@@ -300,7 +350,7 @@
 			floor.receiveShadow = true;
 			scene.add( floor );
 
-			const grid = new THREE.GridHelper( FLOOR_SIZE, 20, 0x3d6580, 0x1c3448 );
+			const grid = new THREE.GridHelper( BACKGROUND_SIZE, BACKGROUND_GRID_DIVISIONS, 0x3d6580, 0x1c3448 );
 			grid.position.y = 0.002;
 			scene.add( grid );
 

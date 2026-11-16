@@ -47,6 +47,58 @@ button {
 	letter-spacing: 0.02em;
 }
 
+.site-footer {
+	position: fixed;
+	bottom: 16px;
+	left: 18px;
+	display: flex;
+	align-items: center;
+	gap: 13px;
+	color: rgba( 185, 203, 224, 0.78 );
+	font-size: 11px;
+	letter-spacing: 0.04em;
+	user-select: none;
+	z-index: 1;
+}
+
+.social-links {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+}
+
+.site-footer a {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 27px;
+	height: 27px;
+	border: 1px solid rgba( 123, 217, 210, 0.42 );
+	border-radius: 8px;
+	box-sizing: border-box;
+	color: #b9cbe0;
+	background: rgba( 8, 17, 29, 0.44 );
+	transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease;
+}
+
+.site-footer a:hover {
+	color: #7bd9d2;
+	border-color: #7bd9d2;
+	background: rgba( 23, 69, 90, 0.72 );
+	text-decoration: none;
+}
+
+.site-footer a:focus-visible {
+	outline: 2px solid #7bd9d2;
+	outline-offset: 3px;
+}
+
+.site-footer svg {
+	width: 15px;
+	height: 15px;
+	fill: currentColor;
+}
+
 a, button, input, select {
 	pointer-events: auto;
 }
@@ -56,6 +108,15 @@ a, button, input, select {
 }
 
 @media all and ( max-width: 640px ) {
+	.site-footer {
+		left: 0;
+		width: 100%;
+		justify-content: center;
+		padding: 0 18px;
+		box-sizing: border-box;
+		text-align: center;
+	}
+
 	.lil-gui.root { 
 		right: auto;
 		top: auto;
